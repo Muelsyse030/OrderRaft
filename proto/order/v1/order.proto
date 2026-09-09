@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package order.v1;
+
+option go_package = "example.com/OrderRaft/gen/order/v1;orderv1";
+
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+
+  ORDER_STATUS_CREATED = 1;
+
+  ORDER_STATUS_PAID = 2;
+
+  ORDER_STATUS_SHIPPED = 3;
+
+  ORDER_STATUS_COMPLETED = 4;
+
+  ORDER_STATUS_CANCELLED = 5;
+
+  ORDER_STATUS_REFUNDING = 6;
+
+  ORDER_STATUS_REFUNDED = 7;
+}
+
+message Order {
+  string id = 1;
+  string user_id = 2;
+
+  int64 amount_cents = 3;
+
+  string currency = 4;
+
+  OrderStatus status = 5;
+
+  uint64 version = 6;
+
+  int64 created_at_unix_ms = 7;
+  int64 updated_at_unix_ms = 8;
+}
+
+message CreateOrderRequest {
+  string request_id = 1;
+  string order_id = 2;
+  string user_id = 3;
+  int64 amount_cents = 4;
+  string currency = 5;
+}
+
+message CreateOrderResponse {
+  string request_id = 1;
+  string code = 2;
+  string message = 3;
+  Order order = 4;
+}
+
+message GetOrderRequest {
+  string order_id = 1;
+}
+
+message GetOrderResponse {
+  string code = 1;
+  string message = 2;
+  Order order = 3;
+}
+
+message ChangeOrderStatusRequest {
+  string request_id = 1;
+  string order_id = 2;
+  OrderStatus target_status = 3;
+}
+
+message ChangeOrderStatusResponse {
+  string request_id = 1;
+  string code = 2;
+  string message = 3;
+  Order order = 4;
+  bool replayed = 5;
+}
+
+service OrderService {
+  rpc CreateOrder(CreateOrderRequest) returns (CreateOrderResponse);
+
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+
+  rpc ChangeOrderStatus(ChangeOrderStatusRequest) returns (ChangeOrderStatusResponse);
+}

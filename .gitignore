@@ -1,0 +1,15 @@
+# 编译产物
+/order-server
+/order-client
+*.exe
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# 系统文件
+.DS_Store
+Thumbs.db

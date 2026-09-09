@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package order.v1;
+
+option go_package = "example.com/OrderRaft/gen/order/v1;orderv1";
+import "order/v1/order.proto";
+
+message CreateOrderCommand {
+  string order_id = 1;
+  string user_id = 2;
+  int64 amount_cents = 3;
+  string currency = 4;
+}
+
+message ChangeOrderStatusCommand {
+  string order_id = 1;
+  OrderStatus target_status = 2;
+}
+
+message RaftCommand {
+  string request_id = 1;
+  int64 applied_at_unix_ms = 2;
+  uint32 schema_version = 3;
+
+  oneof operation{
+    CreateOrderCommand create_order = 10;
+    ChangeOrderStatusCommand change_order_status = 11;
+  }
+}
+
+message RaftCommandResult {
+  string request_id = 1;
+  string code = 2;
+  string message = 3;
+  Order order = 4;
+  bool replayed = 5;
+}
+
+message IdempotencyRecordSnapshot {
+  string request_id = 1;
+  bytes fingerprint = 2;
+  RaftCommandResult result = 3;
+}
+
+message FSMStateSnapshot {
+  uint32 schema_version = 1;
+  repeated Order orders = 2;
+  repeated IdempotencyRecordSnapshot idempotency_records = 3;
+}
