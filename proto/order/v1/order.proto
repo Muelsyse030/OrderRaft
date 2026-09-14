@@ -51,6 +51,7 @@ message CreateOrderResponse {
   string code = 2;
   string message = 3;
   Order order = 4;
+  bool replayed = 5;
 }
 
 message GetOrderRequest {

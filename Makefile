@@ -5,7 +5,10 @@ GEN_DIR := gen
 
 PROTO_FILES := $(shell find $(PROTO_DIR) -type f -name '*.proto')
 
-.PHONY: proto proto-check test build tidy clean-proto
+# 把 go install 安装的 protoc 插件目录加入 PATH,使 make proto 无需手动配置环境变量
+export PATH := $(shell go env GOPATH)/bin:$(PATH)
+
+.PHONY: proto proto-check test test-race vet fmt fmt-check build tidy ci clean-proto
 
 # 检查 protobuf 编译工具是否存在
 proto-check:
@@ -40,9 +43,34 @@ tidy:
 test:
 	go test ./...
 
+# 运行全部测试并开启竞态检测
+test-race:
+	go test -race -count=1 ./...
+
+# 静态检查
+vet:
+	go vet ./...
+
+# 格式化代码
+fmt:
+	gofmt -w .
+
+# 校验代码格式
+fmt-check:
+	@unformatted="$$(gofmt -l .)"; \
+	if [ -n "$$unformatted" ]; then \
+		echo "以下文件未通过 gofmt："; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi
+	@echo "gofmt 检查通过"
+
 # 编译服务端和客户端
 build:
 	go build ./...
+
+# 与 CI 一致的本地检查
+ci: fmt-check vet test-race build
 
 # 删除 protobuf 生成文件
 clean-proto:

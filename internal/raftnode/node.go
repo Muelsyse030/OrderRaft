@@ -3,6 +3,7 @@ package raftnode
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	orderv1 "example.com/OrderRaft/gen/order/v1"
@@ -12,14 +13,38 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// Config 描述单个 Raft 节点的启动参数，零值字段使用 hashicorp/raft 的默认值。
+type Config struct {
+	// LocalID 是本节点的 Raft 节点 ID，必填。
+	LocalID string
+
+	// RaftAddress 是通告给集群其他节点的 Raft 地址。
+	// 当前使用内存传输，留空时取 LocalID；接入真实网络传输后应填 host:port。
+	RaftAddress string
+
+	// LogLevel 是 raft 内部日志级别：trace/debug/info/warn/error。
+	// 留空时使用 info，避免默认的 debug 日志淹没输出。
+	LogLevel string
+
+	// 以下超时留空时使用 hashicorp/raft 默认值。
+	HeartbeatTimeout   time.Duration
+	ElectionTimeout    time.Duration
+	LeaderLeaseTimeout time.Duration
+	CommitTimeout      time.Duration
+	SnapshotInterval   time.Duration
+}
+
 type Node struct {
 	raft      *raft.Raft
 	state     *fsm.FSM
 	transport *raft.InmemTransport
 }
 
-func NewSingleNode(localID string, state *fsm.FSM) (*Node, error) {
-	if localID == "" {
+// 支持通过 -log-level 调整 raft 内部日志级别。
+var supportedLogLevels = []string{"trace", "debug", "info", "warn", "error"}
+
+func NewSingleNode(cfg Config, state *fsm.FSM) (*Node, error) {
+	if strings.TrimSpace(cfg.LocalID) == "" {
 		return nil, errors.New("local raft node ID is required")
 	}
 
@@ -27,19 +52,45 @@ func NewSingleNode(localID string, state *fsm.FSM) (*Node, error) {
 		return nil, errors.New("FSM is required")
 	}
 
+	logLevel, err := normalizeLogLevel(cfg.LogLevel)
+	if err != nil {
+		return nil, err
+	}
+
 	config := raft.DefaultConfig()
-	config.LocalID = raft.ServerID(localID)
+	config.LocalID = raft.ServerID(cfg.LocalID)
+	config.LogLevel = logLevel
+	if cfg.HeartbeatTimeout > 0 {
+		config.HeartbeatTimeout = cfg.HeartbeatTimeout
+	}
+	if cfg.ElectionTimeout > 0 {
+		config.ElectionTimeout = cfg.ElectionTimeout
+	}
+	if cfg.LeaderLeaseTimeout > 0 {
+		config.LeaderLeaseTimeout = cfg.LeaderLeaseTimeout
+	}
+	if cfg.CommitTimeout > 0 {
+		config.CommitTimeout = cfg.CommitTimeout
+	}
+	if cfg.SnapshotInterval > 0 {
+		config.SnapshotInterval = cfg.SnapshotInterval
+	}
+
+	address := raft.ServerAddress(strings.TrimSpace(cfg.RaftAddress))
+	if address == "" {
+		address = raft.ServerAddress(cfg.LocalID)
+	}
+
 	store := raft.NewInmemStore()
 	snapshotStore := raft.NewInmemSnapshotStore()
-	address, transport := raft.NewInmemTransport(
-		raft.ServerAddress(localID),
-	)
+	transportAddress, transport := raft.NewInmemTransport(address)
 
 	raftInstance, err := raft.NewRaft(config, state, store, store, snapshotStore, transport)
 	if err != nil {
 		_ = transport.Close()
 		return nil, fmt.Errorf("create raft instance: %w", err)
 	}
+
 	node := &Node{
 		raft:      raftInstance,
 		state:     state,
@@ -49,7 +100,7 @@ func NewSingleNode(localID string, state *fsm.FSM) (*Node, error) {
 		Servers: []raft.Server{
 			{
 				ID:       config.LocalID,
-				Address:  address,
+				Address:  transportAddress,
 				Suffrage: raft.Voter,
 			},
 		},
@@ -63,6 +114,23 @@ func NewSingleNode(localID string, state *fsm.FSM) (*Node, error) {
 		return nil, fmt.Errorf("bootstrap single-node raft cluster: %w", err)
 	}
 	return node, nil
+}
+
+func normalizeLogLevel(level string) (string, error) {
+	level = strings.ToLower(strings.TrimSpace(level))
+	if level == "" {
+		return "info", nil
+	}
+	for _, supported := range supportedLogLevels {
+		if level == supported {
+			return level, nil
+		}
+	}
+	return "", fmt.Errorf(
+		"unsupported raft log level %q, expected one of %s",
+		level,
+		strings.Join(supportedLogLevels, "/"),
+	)
 }
 
 func (n *Node) WaitForLeader(timeout time.Duration) error {

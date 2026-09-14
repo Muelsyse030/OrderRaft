@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 格式 / 静态检查 / 测试 / 构建
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 校验代码格式
+        run: make fmt-check
+
+      - name: 静态检查
+        run: make vet
+
+      - name: 单元测试(含竞态检测)
+        run: make test-race
+
+      - name: 构建
+        run: make build
+
+      - name: 校验 go.mod 是否整洁
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  proto:
+    name: 校验生成代码是否最新
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 安装 protoc 与代码生成插件
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.4.0
+
+      - name: 重新生成并比对
+        run: |
+          make proto
+          # 生成文件头部会记录 protoc 版本,忽略仅由版本号差异产生的改动
+          git diff --exit-code -I'^//' -- gen

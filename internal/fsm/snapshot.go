@@ -1,15 +1,15 @@
 package fsm
 
 import (
-"errors"
-"fmt"
-"io"
-"sort"
+	"errors"
+	"fmt"
+	"io"
+	"sort"
 
-orderv1 "example.com/OrderRaft/gen/order/v1"
+	orderv1 "example.com/OrderRaft/gen/order/v1"
 
-"github.com/hashicorp/raft"
-"google.golang.org/protobuf/proto"
+	"github.com/hashicorp/raft"
+	"google.golang.org/protobuf/proto"
 )
 
 var _ raft.FSM = (*FSM)(nil)
