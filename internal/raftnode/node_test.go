@@ -178,6 +178,59 @@ func TestSingleNodeApply(t *testing.T) {
 	}
 }
 
+// 暴露快照阈值后,单节点也能真正触发快照。
+func TestNodeTakesSnapshots(t *testing.T) {
+	node := newTestNodeWithConfig(t, Config{
+		LocalID:            "node-1",
+		LogLevel:           "error",
+		HeartbeatTimeout:   100 * time.Millisecond,
+		ElectionTimeout:    200 * time.Millisecond,
+		LeaderLeaseTimeout: 100 * time.Millisecond,
+		SnapshotInterval:   100 * time.Millisecond,
+		SnapshotThreshold:  1,
+		TrailingLogs:       1,
+	}, fsm.New())
+
+	if _, err := node.Apply(newCreateCommand(), 3*time.Second); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if node.raft.Stats()["last_snapshot_index"] != "0" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("配置了快照阈值后仍未触发快照")
+}
+
+// DisableSnapshots 会覆盖 SnapshotInterval,即使阈值很小也不触发自动快照。
+func TestNodeDisablesSnapshots(t *testing.T) {
+	node := newTestNodeWithConfig(t, Config{
+		LocalID:            "node-1",
+		LogLevel:           "error",
+		HeartbeatTimeout:   100 * time.Millisecond,
+		ElectionTimeout:    200 * time.Millisecond,
+		LeaderLeaseTimeout: 100 * time.Millisecond,
+		SnapshotInterval:   10 * time.Millisecond,
+		DisableSnapshots:   true,
+		SnapshotThreshold:  1,
+		TrailingLogs:       1,
+	}, fsm.New())
+
+	if _, err := node.Apply(newCreateCommand(), 3*time.Second); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	if index := node.raft.Stats()["last_snapshot_index"]; index != "0" {
+		t.Fatalf("禁用自动快照后仍触发了快照: last_snapshot_index=%s", index)
+	}
+}
+
 func TestNodeHandlesNilReceiver(t *testing.T) {
 	var uninitialized *Node
 

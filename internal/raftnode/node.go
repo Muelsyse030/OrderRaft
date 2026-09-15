@@ -18,8 +18,9 @@ type Config struct {
 	// LocalID 是本节点的 Raft 节点 ID，必填。
 	LocalID string
 
-	// RaftAddress 是通告给集群其他节点的 Raft 地址。
-	// 当前使用内存传输，留空时取 LocalID；接入真实网络传输后应填 host:port。
+	// RaftAddress 是本节点通告给集群的 Raft 传输地址。
+	// 当前使用内存传输(InmemTransport)，该地址只在进程内用于标识节点，
+	// 不会建立真实网络连接；要组成多节点集群必须替换为 raft.NetworkTransport。
 	RaftAddress string
 
 	// LogLevel 是 raft 内部日志级别：trace/debug/info/warn/error。
@@ -31,8 +32,28 @@ type Config struct {
 	ElectionTimeout    time.Duration
 	LeaderLeaseTimeout time.Duration
 	CommitTimeout      time.Duration
-	SnapshotInterval   time.Duration
+
+	// SnapshotInterval 是自动触发快照的最小间隔，为零时使用 raft 默认值(120s)。
+	SnapshotInterval time.Duration
+
+	// DisableSnapshots 为 true 时关闭自动快照定时器(忽略 SnapshotInterval)。
+	// hashicorp/raft v1.7.3 的 ValidateConfig 拒绝 SnapshotInterval == 0,
+	// 因此这里用一个实际不会触发的超大间隔来等价实现"禁用"。
+	DisableSnapshots bool
+
+	// SnapshotThreshold 是自上次快照以来累积的日志条目数，达到后触发快照，
+	// 为零时使用 raft 默认值(8192)。调小它可以让单节点演示真正执行快照/恢复路径。
+	SnapshotThreshold uint64
+
+	// TrailingLogs 是快照完成后保留的尾部日志条目数，便于慢节点追赶，
+	// 为零时使用 raft 默认值(10240)。
+	TrailingLogs uint64
 }
+
+// disabledSnapshotInterval 用于实现"禁用自动快照"。
+// raft 的 SnapshotInterval 上限受 randomTimeout 的 minVal+extra 计算约束，
+// 取 2^62 纳秒(约 146 年)既不会溢出，也不会在进程生命周期内触发。
+const disabledSnapshotInterval = time.Duration(1) << 62
 
 type Node struct {
 	raft      *raft.Raft
@@ -72,8 +93,16 @@ func NewSingleNode(cfg Config, state *fsm.FSM) (*Node, error) {
 	if cfg.CommitTimeout > 0 {
 		config.CommitTimeout = cfg.CommitTimeout
 	}
-	if cfg.SnapshotInterval > 0 {
+	if cfg.DisableSnapshots {
+		config.SnapshotInterval = disabledSnapshotInterval
+	} else if cfg.SnapshotInterval > 0 {
 		config.SnapshotInterval = cfg.SnapshotInterval
+	}
+	if cfg.SnapshotThreshold > 0 {
+		config.SnapshotThreshold = cfg.SnapshotThreshold
+	}
+	if cfg.TrailingLogs > 0 {
+		config.TrailingLogs = cfg.TrailingLogs
 	}
 
 	address := raft.ServerAddress(strings.TrimSpace(cfg.RaftAddress))
@@ -184,13 +213,22 @@ func (n *Node) Apply(command *orderv1.RaftCommand, timeout time.Duration) (*orde
 	rawResponse := future.Response()
 	response, ok := rawResponse.(*fsm.ApplyResponse)
 	if !ok {
-		return nil, fmt.Errorf("unexpected FSM response type: %T", rawResponse)
+		return nil, fmt.Errorf(
+			"%w: unexpected FSM response type: %T",
+			fsm.ErrApplyFailed,
+			rawResponse,
+		)
 	}
 	if response.Err != nil {
+		// response.Err 可能已经包装了 ErrApplyFailed(解码失败)或 ErrInvalidCommand
+		// (纯参数校验失败),这里只补上"应用阶段"上下文,保留 errors.Is 链。
 		return nil, fmt.Errorf("FSM apply command: %w", response.Err)
 	}
 	if response.Result == nil {
-		return nil, errors.New("FSM returned nil command result")
+		return nil, fmt.Errorf(
+			"%w: FSM returned nil command result",
+			fsm.ErrApplyFailed,
+		)
 	}
 	return proto.Clone(response.Result).(*orderv1.RaftCommandResult), nil
 }

@@ -22,7 +22,7 @@ message RaftCommand {
   int64 applied_at_unix_ms = 2;
   uint32 schema_version = 3;
 
-  oneof operation{
+  oneof operation {
     CreateOrderCommand create_order = 10;
     ChangeOrderStatusCommand change_order_status = 11;
   }

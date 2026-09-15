@@ -20,25 +20,57 @@ type raftSnapshot struct {
 }
 
 func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
-	state := &orderv1.FSMStateSnapshot{
-		SchemaVersion:      1,
-		Orders:             make([]*orderv1.Order, 0),
-		IdempotencyRecords: make([]*orderv1.IdempotencyRecordSnapshot, 0),
+	state, err := f.snapshotState()
+	if err != nil {
+		return nil, err
 	}
 
-	f.mu.RLock()
+	data, err := proto.MarshalOptions{
+		Deterministic: true,
+	}.Marshal(state)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"marshal FSM snapshot: %w",
+			err,
+		)
+	}
 
-	orderIDs := make([]string, 0, len(f.orders))
-	for orderID := range f.orders {
+	// data 由本次 Marshal 独占分配,返回后没有别名共享,直接转移所有权即可,
+	// 不需要再整份复制一遍(快照体积与订单/幂等记录数成正比)。
+	return &raftSnapshot{
+		data: data,
+	}, nil
+}
+
+// snapshotState 在读锁内只抓取指针快照与排序键,克隆和排序都在锁外完成,
+// 避免长时间的深拷贝阻塞写路径(Apply 需要写锁)。
+//
+// 已存入 orders / idempotencyRecords 的值在插入后不再被就地修改:
+// Apply 只会整体替换 map 中的条目,因此锁外读取这些指针是安全的。
+func (f *FSM) snapshotState() (*orderv1.FSMStateSnapshot, error) {
+	orders, records := f.view()
+
+	orderIDs := make([]string, 0, len(orders))
+	for orderID := range orders {
 		orderIDs = append(orderIDs, orderID)
 	}
 	sort.Strings(orderIDs)
 
-	for _, orderID := range orderIDs {
-		order := f.orders[orderID]
-		if order == nil {
-			f.mu.RUnlock()
+	requestIDs := make([]string, 0, len(records))
+	for requestID := range records {
+		requestIDs = append(requestIDs, requestID)
+	}
+	sort.Strings(requestIDs)
 
+	state := &orderv1.FSMStateSnapshot{
+		SchemaVersion:      snapshotSchemaVersion,
+		Orders:             make([]*orderv1.Order, 0, len(orderIDs)),
+		IdempotencyRecords: make([]*orderv1.IdempotencyRecordSnapshot, 0, len(requestIDs)),
+	}
+
+	for _, orderID := range orderIDs {
+		order := orders[orderID]
+		if order == nil {
 			return nil, fmt.Errorf(
 				"snapshot order %q is nil",
 				orderID,
@@ -51,23 +83,10 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 		)
 	}
 
-	requestIDs := make(
-		[]string,
-		0,
-		len(f.idempotencyRecords),
-	)
-
-	for requestID := range f.idempotencyRecords {
-		requestIDs = append(requestIDs, requestID)
-	}
-	sort.Strings(requestIDs)
-
 	for _, requestID := range requestIDs {
-		record := f.idempotencyRecords[requestID]
+		record := records[requestID]
 
 		if record == nil {
-			f.mu.RUnlock()
-
 			return nil, fmt.Errorf(
 				"snapshot idempotency record %q is nil",
 				requestID,
@@ -75,8 +94,6 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 		}
 
 		if record.result == nil {
-			f.mu.RUnlock()
-
 			return nil, fmt.Errorf(
 				"snapshot idempotency result %q is nil",
 				requestID,
@@ -96,21 +113,25 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 		)
 	}
 
-	f.mu.RUnlock()
+	return state, nil
+}
 
-	data, err := proto.MarshalOptions{
-		Deterministic: true,
-	}.Marshal(state)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"marshal FSM snapshot: %w",
-			err,
-		)
+// view 在锁内抓取 map 的浅拷贝,解锁路径由 defer 统一收敛。
+func (f *FSM) view() (map[string]*orderv1.Order, map[string]*idempotencyRecord) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	orders := make(map[string]*orderv1.Order, len(f.orders))
+	for orderID, order := range f.orders {
+		orders[orderID] = order
 	}
 
-	return &raftSnapshot{
-		data: append([]byte(nil), data...),
-	}, nil
+	records := make(map[string]*idempotencyRecord, len(f.idempotencyRecords))
+	for requestID, record := range f.idempotencyRecords {
+		records[requestID] = record
+	}
+
+	return orders, records
 }
 
 func (s *raftSnapshot) Persist(
@@ -184,7 +205,7 @@ func (f *FSM) Restore(
 		)
 	}
 
-	if state.GetSchemaVersion() != 1 {
+	if state.GetSchemaVersion() != snapshotSchemaVersion {
 		return fmt.Errorf(
 			"unsupported FSM snapshot schema version: %d",
 			state.GetSchemaVersion(),

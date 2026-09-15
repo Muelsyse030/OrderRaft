@@ -27,5 +27,5 @@ func ValidateStatusTransition(from orderv1.OrderStatus, to orderv1.OrderStatus) 
 			return nil
 		}
 	}
-	return fmt.Errorf("invalid order status transition %s -> %s ", from.String(), to.String())
+	return fmt.Errorf("invalid order status transition %s -> %s", from.String(), to.String())
 }

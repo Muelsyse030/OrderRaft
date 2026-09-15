@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"strconv"
 	"time"
 
 	orderv1 "example.com/OrderRaft/gen/order/v1"
@@ -23,7 +24,10 @@ func main() {
 
 	client := orderv1.NewOrderServiceClient(conn)
 
-	createResp, err := createOrder(client, "request-001")
+	// 每次运行生成唯一的业务 ID，避免重复执行示例时命中 ALREADY_EXISTS。
+	orderID := newOrderID()
+
+	createResp, err := createOrder(client, "create-"+orderID, orderID)
 	if err != nil {
 		log.Fatalf("创建订单失败: %v", err)
 	}
@@ -37,7 +41,7 @@ func main() {
 	)
 
 	// 使用同一个 request_id 重试，验证幂等：服务端返回首次执行结果。
-	replayedResp, err := createOrder(client, "request-001")
+	replayedResp, err := createOrder(client, "create-"+orderID, orderID)
 	if err != nil {
 		log.Fatalf("重试创建订单失败: %v", err)
 	}
@@ -49,7 +53,12 @@ func main() {
 		replayedResp.GetOrder().GetVersion(),
 	)
 
-	changeResp, err := changeOrderStatus(client, "request-002", orderv1.OrderStatus_ORDER_STATUS_PAID)
+	changeResp, err := changeOrderStatus(
+		client,
+		"change-"+orderID,
+		orderID,
+		orderv1.OrderStatus_ORDER_STATUS_PAID,
+	)
 	if err != nil {
 		log.Fatalf("修改订单状态失败: %v", err)
 	}
@@ -65,7 +74,7 @@ func main() {
 	defer cancel()
 
 	getResp, err := client.GetOrder(ctx, &orderv1.GetOrderRequest{
-		OrderId: "order-001",
+		OrderId: orderID,
 	})
 	if err != nil {
 		log.Fatalf("查询订单失败: %v", err)
@@ -79,13 +88,17 @@ func main() {
 	)
 }
 
-func createOrder(client orderv1.OrderServiceClient, requestID string) (*orderv1.CreateOrderResponse, error) {
+func newOrderID() string {
+	return "order-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+func createOrder(client orderv1.OrderServiceClient, requestID, orderID string) (*orderv1.CreateOrderResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	return client.CreateOrder(ctx, &orderv1.CreateOrderRequest{
 		RequestId:   requestID,
-		OrderId:     "order-001",
+		OrderId:     orderID,
 		UserId:      "user-001",
 		AmountCents: 1999,
 		Currency:    "CNY",
@@ -95,6 +108,7 @@ func createOrder(client orderv1.OrderServiceClient, requestID string) (*orderv1.
 func changeOrderStatus(
 	client orderv1.OrderServiceClient,
 	requestID string,
+	orderID string,
 	target orderv1.OrderStatus,
 ) (*orderv1.ChangeOrderStatusResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -102,7 +116,7 @@ func changeOrderStatus(
 
 	return client.ChangeOrderStatus(ctx, &orderv1.ChangeOrderStatusRequest{
 		RequestId:    requestID,
-		OrderId:      "order-001",
+		OrderId:      orderID,
 		TargetStatus: target,
 	})
 }
